@@ -52,9 +52,12 @@ class VectorStore:
         flt = None
         if source:
             flt = models.Filter(must=[models.FieldCondition(key="source", match=models.MatchValue(value=source))])
-        res = self.client.query_points(
-            self.collection, query=vector.tolist(), limit=limit, query_filter=flt, with_payload=True
-        )
+        try:    
+            res = self.client.query_points(
+                self.collection, query=vector.tolist(), limit=limit, query_filter=flt, with_payload=True
+            )
+        finally:
+            self.client.close()
         return [VectorHit(id=str(p.id), score=float(p.score), payload=p.payload or {}) for p in res.points]
 
     def count(self) -> int:
