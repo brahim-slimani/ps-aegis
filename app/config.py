@@ -37,7 +37,9 @@ class Settings:
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "TBD"))
 
     # --- mock enterprise backend ---
-    backend_url: str = field(default_factory=lambda: _env("BACKEND_URL", "http://localhost:8001"))
+    backend_version: str = field(default_factory=lambda: _env("BACKEND_VERSION", "1.0"))
+    backend_context_path: str = field(default_factory=lambda: _env("BACKEND_CONTEXT_PATH", "/mock/v1"))
+    backend_url: str = field(default_factory=lambda: _env("BACKEND_URL", "http://localhost:8000"))
     backend_db: str = field(default_factory=lambda: _env("BACKEND_DB", str(ROOT / "data" / "enterprise.db")))
 
     # --- agent memory ---
