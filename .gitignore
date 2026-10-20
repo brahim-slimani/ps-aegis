@@ -4,4 +4,5 @@
 *.pyc
 data/qdrant
 data/*.jsonl
+data/*.db
 .DS_Store

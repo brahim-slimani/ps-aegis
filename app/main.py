@@ -1,7 +1,6 @@
 """uvicorn app.api.main:app --port 8000
 
 POST /ask  -> hybrid retrieval (vector + BM25 -> RRF -> cross-encoder) and a cited answer.
-(The /agent endpoint is added in Phase 5.)
 """
 from __future__ import annotations
 
