@@ -57,7 +57,7 @@ class VectorStore:
                 self.collection, query=vector.tolist(), limit=limit, query_filter=flt, with_payload=True
             )
         finally:
-            self.client.close()
+            print('EOF search >>') #self.client.close()
         return [VectorHit(id=str(p.id), score=float(p.score), payload=p.payload or {}) for p in res.points]
 
     def count(self) -> int:
