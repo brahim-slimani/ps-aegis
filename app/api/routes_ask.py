@@ -10,6 +10,7 @@ from fastapi import Body, Depends, FastAPI, Path, Query, Request, APIRouter
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.llm import client
 from app.retrieval.fusion import build_retriever
 
 @dataclass
@@ -38,20 +39,10 @@ class AskResponse(BaseModel):
     citations: list[Citation]
     grounded: bool
 
-def _citation(n: int, h: Hit) -> dict:
-    return {
-        "n": n,
-        "source": h.source,
-        "title": h.title,
-        "section": h.section,
-        "score": round(h.score, 4),
-        "snippet": h.text[:300],
-    }
-
 
 def build_services(settings: Settings | None = None) -> Services:
     s = settings or get_settings()
-    llm = None
+    llm = client.LLM(s.gemini_api_key, s.llm_model)
     return Services(s, build_retriever(s), llm)
 
 
@@ -59,17 +50,14 @@ rag_router = APIRouter(prefix="/rag/v1")
 @rag_router.get("/health")
 def health():
     svc: Services = build_services()
-    return {"status": "ok", "llm": svc.llm is not None, "reranker": svc.retriever.reranker is not None}
+    return {"status": "ok", "llm": svc.llm is not None and svc.llm.available, "reranker": svc.retriever.reranker is not None}
 
 @rag_router.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest):    
-    retriever = build_retriever(get_settings())
+def ask(req: AskRequest):
+    s: Settings = get_settings()
+    retriever = build_retriever(s)
     hits = retriever.retrieve(query=req.question, top_k=req.top_k, source=req.source)
-    citations = [_citation(i, h) for i, h in enumerate(hits, start=1)]
-
-    best = hits[0]
-    answer = f"(No LLM configured yet, best matching from {best.source}) {best.text}" 
-    return {"answer": answer, "citations": citations, "grounded" : True}
+    return client.hybrid_answer(req.question, hits, client.LLM(s.gemini_api_key, s.llm_model))
 
 def getRagRouter() -> APIRouter:
     return rag_router

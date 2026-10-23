@@ -7,6 +7,6 @@ qdrant-client>=1.9
 sentence-transformers>=3.0
 rank-bm25>=0.2.2
 langgraph>=0.2
-anthropic>=0.40
+google-genai>=2.33
 pypdf>=4.0
 pytest>=8.0

@@ -34,7 +34,7 @@ class Settings:
     # --- LLM (Gemini | Grock). Without a key, the system falls back to offline heuristics. ---
     gemini_api_key: str = field(default_factory=lambda: _env("GEMINI_API_KEY", ""))
     grock_api_key: str = field(default_factory=lambda: _env("GROCK_API_KEY", ""))
-    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "TBD"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "gemini-3.8-flash"))
 
     # --- mock enterprise backend ---
     backend_version: str = field(default_factory=lambda: _env("BACKEND_VERSION", "1.0"))
