@@ -6,6 +6,7 @@ from app.agent.planning import make_plan
 from app.agent.state import MAX_STEPS, MAX_ITERATIONS, AgentState, Observation, PlanStep, recent_history, ContextChunk, PendingAction
 from app.agent.render import confirmation_prompt, render_context, render_observations
 from app.agent.tools import TOOLS, ToolError, ToolRuntime
+from app.agent.guardrails import audit, check_input, authorize, out_of_time, new_action_id
 
 from typing import Any
 from pydantic import ValidationError
@@ -77,13 +78,14 @@ def _first_error(e: ValidationError) -> str:
 def router_node(state: AgentState, deps: AgentDeps) -> dict:
     plan = state.get("plan") or {}
     user_id = state.get("user_id")
+    role = state.get("role", "employee")
     planned: list[PlanStep] = (plan.get("steps") or [])[:MAX_STEPS]
-
+ 
     observations: list[Observation] = list(state.get("observations", []))
     ready: list[PlanStep] = []
     deferred: list[PlanStep] = []
     pending = None
-
+ 
     for i, step in enumerate(planned):
         name = step.get("tool")
         spec = TOOLS.get(name)
@@ -91,8 +93,14 @@ def router_node(state: AgentState, deps: AgentDeps) -> dict:
             observations.append({"tool": str(name), "args": step.get("args", {}), "ok": False,
                                  "error": "unknown tool"})
             continue
-
+ 
         raw = dict(step.get("args") or {})
+        allowed, reason = authorize(role, name, spec.write)
+        if not allowed:
+            audit.warning("DENIED user=%s role=%s tool=%s", user_id, role, name)
+            observations.append({"tool": name, "args": raw, "ok": False, "error": reason})
+            continue
+ 
         if "requester_id" in spec.args_model.model_fields and raw.get("requester_id") is None and user_id is not None:
             raw["requester_id"] = user_id          # "create a ticket" means: on behalf of the person asking
         try:
@@ -100,14 +108,15 @@ def router_node(state: AgentState, deps: AgentDeps) -> dict:
         except ValidationError as e:
             observations.append({"tool": name, "args": raw, "ok": False, "error": f"invalid arguments: {_first_error(e)}"})
             continue
-
+ 
         clean = args.model_dump(exclude_unset=True)
         if spec.write:
-            pending = {"tool": name, "args": clean, "summary": spec.summarize(args)}
+            pending = {"id": new_action_id(), "tool": name, "args": clean, "summary": spec.summarize(args)}
+            audit.info("STAGED user=%s role=%s action=%s tool=%s args=%s", user_id, role, pending["id"], name, clean)
             deferred = planned[i + 1:]
             break
         ready.append({"tool": name, "args": clean})
-
+ 
     update: dict = {
         "steps": ready,
         "deferred_steps": deferred,
@@ -116,15 +125,22 @@ def router_node(state: AgentState, deps: AgentDeps) -> dict:
     }
     if pending:
         update["pending_action"] = pending
-        update["plan"] = {**plan, "more": False}   # the user must confirm before anything further is planned
+        update["plan"] = {**plan, "more": False}   # the user must decide before anything further is planned
     return update
 
 """The decisions behind the graph's conditional edges, as plain functions (testable without LangGraph).
-
-    planner --------------------------------> router
-    router   --route == "tools"-------------> executor      else -> responder
-    executor --plan.more and rounds left----> planner        else -> responder
-    responder ------------------------------> END
+ 
+    guard    --blocked----------------------> END            (refused: nothing is stored)
+    guard    --otherwise--------------------> gate
+    gate     --gate_decision == "plan"------> planner        (ordinary message)
+    gate     --gate_decision == "execute"---> execute_pending (confirm=true with the right action id)
+    gate     --gate_decision == "respond"---> responder      (decision cancelled / refused / nothing pending)
+    planner  ---------------------------------> router
+    router   --route == "tools"---------------> executor     else -> responder
+    executor --plan.more, rounds and time left-> planner      else -> responder
+    execute_pending --resume------------------> router        (continue with the steps queued behind the write)
+                    --otherwise-------------> responder
+    responder -------------------------------> END
 """
 
 def after_router(state: AgentState) -> str:
@@ -134,7 +150,9 @@ def after_router(state: AgentState) -> str:
 def after_executor(state: AgentState, max_iterations: int) -> str:
     """Loop back to the planner only if it asked to see the results and the round budget is not used up."""
     wants_more = bool((state.get("plan") or {}).get("more"))
-    return "planner" if wants_more and state.get("iteration", 0) < max_iterations else "responder"
+    if wants_more and state.get("iteration", 0) < max_iterations and not out_of_time(state):
+        return "planner"
+    return "responder"
 
 """Responder node: writes `draft_answer` from the retrieved passages and tool results, then `answer`.
 
@@ -143,8 +161,6 @@ def after_executor(state: AgentState, max_iterations: int) -> str:
 
 The confirmation question is added by code, not by the model, so it is always present and worded the same way.
 """
-
-log = logging.getLogger(__name__)
 
 NOT_FOUND = "I could not find anything relevant in the company documents."
 
@@ -221,6 +237,8 @@ def responder_node(state: AgentState, deps: AgentDeps) -> dict:
 
 """Executor node: runs the router's validated READ steps against hybrid retrieval and the mock backend."""
 
+SKIPPED = "skipped: this request ran out of time"
+
 def _merge_context(existing: list[ContextChunk], new: list[dict]) -> list[ContextChunk]:
     """Append new passages, skipping ones already present, and number them 1..N so [n] citations stay unique."""
     merged = list(existing)
@@ -239,6 +257,9 @@ def executor_node(state: AgentState, deps: AgentDeps) -> dict:
 
     for step in state.get("steps", []):
         name, raw_args = step["tool"], step["args"]
+        if out_of_time(state):
+            observations.append({"tool": name, "args": raw_args, "ok": False, "error": SKIPPED})
+            continue
         spec = TOOLS[name]                      # the router already checked this
         try:
             args = spec.args_model(**raw_args)
@@ -257,3 +278,113 @@ def executor_node(state: AgentState, deps: AgentDeps) -> dict:
         observations.append({"tool": name, "args": raw_args, "ok": True, "result": result})
 
     return {"observations": observations, "retrieved_context": context, "steps": []}
+
+
+"""Guard node: the first stop of every turn. Screens the user's message.
+
+A refused message ends the graph right here (see routing.after_guard): the planner never sees it, and neither
+the message nor the refusal is added to the conversation history. Confirmation turns carry no text, so they
+pass straight through.
+"""
+
+def guard_node(state: AgentState, deps: AgentDeps) -> dict:
+    if state.get("confirm") is not None:
+        return {"blocked": False}
+    ok, reason = check_input(state.get("user_input"))
+    if not ok:
+        audit.warning("BLOCKED user=%s role=%s reason=%s", state.get("user_id"), state.get("role"), reason)
+        return {"blocked": True, "answer": reason}
+    return {"blocked": False}
+
+
+"""Confirmation: the gate that decides what a turn is, and the node that runs a confirmed write.
+
+gate_node
+    * ordinary message  -> any pending action is dropped (the new message supersedes it), then plan as usual
+    * decision (confirm is True / False):
+        - nothing pending                       -> "nothing to confirm", nothing happens
+        - action_id is not the pending one      -> refused, the real pending action stays pending
+        - confirm=False                         -> the pending action is discarded
+        - confirm=True                          -> execute_pending runs it
+
+    Typing "yes" in a message never reaches the execute branch: only the structured `confirm` flag does.
+
+execute_pending_node
+    Re-checks the caller's role, refuses to *start* the write once the request's time budget is spent (the
+    action stays pending so the user can confirm again), runs it, and clears it so a repeated confirmation
+    cannot run it twice. Steps that were queued behind the write are handed to the router to continue.
+"""
+
+NOTHING_PENDING = "There is nothing waiting for confirmation."
+WRONG_ACTION = "That confirmation does not match the pending action, so nothing was executed."
+OUT_OF_TIME = "I ran out of time before running that action, so nothing was changed."
+
+
+def gate_node(state: AgentState, deps: AgentDeps) -> dict:
+    pending = state.get("pending_action")
+    confirm = state.get("confirm")
+    user_id = state.get("user_id")
+
+    if confirm is None:
+        if pending:
+            audit.info("DROPPED user=%s action=%s tool=%s (superseded by a new message)",
+                       user_id, pending["id"], pending["tool"])
+        return {"gate_decision": "plan", "pending_action": None, "deferred_steps": []}
+
+    if not pending:
+        return {"gate_decision": "respond", "draft_answer": NOTHING_PENDING}
+
+    if state.get("action_id") != pending["id"]:
+        audit.warning("REFUSED user=%s sent_action=%s pending_action=%s", user_id, state.get("action_id"), pending["id"])
+        return {"gate_decision": "respond", "draft_answer": WRONG_ACTION}
+
+    if confirm is False:
+        audit.info("CANCELLED user=%s action=%s tool=%s", user_id, pending["id"], pending["tool"])
+        return {"gate_decision": "respond", "pending_action": None, "deferred_steps": [],
+                "draft_answer": f"Okay, I cancelled: {pending['summary']}. Nothing was changed."}
+
+    return {"gate_decision": "execute"}
+
+
+def execute_pending_node(state: AgentState, deps: AgentDeps) -> dict:
+    pending = state["pending_action"]
+    name, raw_args = pending["tool"], pending["args"]
+    role, user_id = state.get("role", "employee"), state.get("user_id")
+    spec = TOOLS[name]
+
+    def failed(error: str) -> dict:
+        obs: Observation = {"tool": name, "args": raw_args, "ok": False, "error": error}
+        # The attempt is used up: clear the action (and what was queued behind it) so it cannot run twice.
+        return {"observations": [obs], "pending_action": None, "deferred_steps": [], "resume": False}
+
+    ok, reason = authorize(role, name, True)          # again: the role may differ from when it was staged
+    if not ok:
+        audit.warning("DENIED(at confirm) user=%s role=%s tool=%s", user_id, role, name)
+        return failed(reason)
+
+    if out_of_time(state):
+        audit.warning("NOT STARTED user=%s action=%s tool=%s (time budget spent)", user_id, pending["id"], name)
+        return {"draft_answer": OUT_OF_TIME, "resume": False}     # pending stays: the user can confirm again
+
+    try:
+        args = spec.args_model(**raw_args)
+        result = spec.run(deps.runtime, args)
+    except (ToolError, ValidationError) as e:
+        audit.warning("FAILED user=%s role=%s tool=%s args=%s error=%s", user_id, role, name, raw_args, e)
+        return failed(str(e))
+    except Exception as e:                            # unexpected: the write may or may not have happened
+        log.exception("confirmed action %s crashed", name)
+        audit.error("FAILED user=%s role=%s tool=%s args=%s error=%s", user_id, role, name, raw_args, e)
+        return failed(f"unexpected error ({type(e).__name__}); check the current state before retrying")
+
+    audit.info("EXECUTED user=%s role=%s action=%s tool=%s args=%s", user_id, role, pending["id"], name, raw_args)
+    deferred = state.get("deferred_steps", [])
+    return {
+        "observations": [{"tool": name, "args": raw_args, "ok": True, "result": result}],
+        "executed": [{"tool": name, "args": raw_args, "summary": pending["summary"], "result": result}],
+        "pending_action": None,
+        "deferred_steps": [],
+        "resume": True,
+        # What was planned behind the write now goes through the router like a fresh plan.
+        "plan": {"intent": "action", "question": pending["summary"], "steps": deferred, "more": False, "reply": ""},
+    }

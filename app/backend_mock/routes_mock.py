@@ -207,7 +207,7 @@ def cancel_order(order_id: Annotated[int, Path(ge=1)], db: DB, body: Annotated[O
     return service.cancel_order(db, order_id, body.note, body.changed_by)
 
 
-def getBackendMockRouter() -> APIRouter:
+def get_backend_mock_router() -> APIRouter:
     return router
 
 

@@ -27,12 +27,14 @@ OrderStatus = Literal["pending", "processing", "shipped", "delivered", "cancelle
 class ToolError(Exception):
     """A tool failed in an expected way (backend 4xx, unreachable, ...). The message is safe to show the user."""
 
+ 
+BACKEND_TIMEOUT = 10.0   # seconds per backend call; the agent's time budget is checked against it (runner.py)
 
 class BackendClient:
     """Thin HTTP client for the mock enterprise backend."""
 
     def __init__(self, base_url: str, client: httpx.Client | None = None):
-        self.http = client or httpx.Client(base_url=base_url, timeout=10.0)
+        self.http = client or httpx.Client(base_url=base_url, timeout=BACKEND_TIMEOUT)
 
     def call(self, method: str, path: str, params: dict | None = None, json: dict | None = None) -> Any:
         try:
@@ -183,6 +185,8 @@ _SPECS = [
              lambda a: f"Find employee '{a.q}'"),
     ToolSpec("get_employee", "Get one employee by id, with manager and ticket workload.", GetEmployeeArgs, False,
              _get("/employees/{}", "employee_id"), lambda a: f"Get employee #{a.employee_id}"),
+    ToolSpec("list_employees", "Get all list of employees.", GetEmployeeArgs, False,
+             lambda rt, a: rt.backend.call("GET", "/employees"), lambda a: "List employees"),
 ]
 
 TOOLS: dict[str, ToolSpec] = {s.name: s for s in _SPECS}

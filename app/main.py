@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from app.config import Settings, get_settings
 from app.api import routes_ask
+from app.api import routes_agent
 from app.backend_mock import routes_mock
 from app.backend_mock import service
 
@@ -39,8 +40,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
     app.add_exception_handler(service.Conflict, _handler(409))
     app.add_exception_handler(service.Invalid, _handler(422))
 
-    app.include_router(routes_ask.getRagRouter())
-    app.include_router(routes_mock.getBackendMockRouter())
+    app.include_router(routes_ask.get_rag_router())
+    app.include_router(routes_mock.get_backend_mock_router())
+    app.include_router(routes_agent.get_agent_router())
     return app
 
 def _default_app() -> FastAPI:

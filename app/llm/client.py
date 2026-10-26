@@ -9,7 +9,7 @@ import traceback
 from google import genai
 from google.genai import types
 from app.retrieval.fusion import Hit
-
+from app.agent.nodes import NOT_FOUND
 
 class LLM:
     def __init__(self, api_key: str = "", model: str = ""):
@@ -65,7 +65,7 @@ def hybrid_answer(question: str, hits: list[Hit], llm: LLM) -> dict | None:
     best = hits[0]
     offline_answer = f"- Offline answer: best matching from {best.source}) {best.text}" 
     if not hits:
-        return {"answer": "I could not find anything relevant in the company documents.", "citations": [], "grounded": False}
+        return {"answer": NOT_FOUND, "citations": [], "grounded": False}
     
     if llm is not None and llm.available:
         context = "\n\n".join(

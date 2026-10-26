@@ -34,6 +34,7 @@ class Settings:
     # --- LLM (Gemini | Grock). Without a key, the system falls back to offline heuristics. ---
     gemini_api_key: str = field(default_factory=lambda: _env("GEMINI_API_KEY", ""))
     grock_api_key: str = field(default_factory=lambda: _env("GROCK_API_KEY", ""))
+    llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", ""))
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "gemini-3.8-flash"))
 
     # --- mock enterprise backend ---
@@ -45,7 +46,10 @@ class Settings:
     # --- agent memory ---
     memory_db: str = field(default_factory=lambda: _env("MEMORY_DB", ""))  # "" => in-memory checkpointer
     history_window: int = field(default_factory=lambda: int(_env("HISTORY_WINDOW", "8")))
-
+    max_turns: int = field(default_factory=lambda: int(_env("MAX_TURNS", "20")))              # user messages / conversation
+    agent_timeout: float = field(default_factory=lambda: float(_env("AGENT_TIMEOUT", "60")))  # seconds / request
+ 
+    rag_api_context_path: str = field(default_factory=lambda: _env("RAG_API_CONTEXT_PATH", "/rag/v1"))
 
 def get_settings() -> Settings:
     return Settings()
