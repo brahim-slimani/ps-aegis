@@ -22,8 +22,7 @@ router = APIRouter(tags=["agent"])
 _UNAVAILABLE = {503: {"description": "The server was started without an agent"}}
 
 
-def _agent(request: Request) -> AgentService:
-    #agent = getattr(request.app.state, "agent", None)
+def _agent() -> AgentService:
     s = get_settings()
     retriever = build_retriever(s)
     llm = LLM(s.llm_api_key, s.llm_model)
@@ -49,7 +48,7 @@ router = APIRouter(prefix=get_settings().rag_api_context_path)
     },
 )
 async def post_agent(body: AgentRequest, request: Request):
-    agent = _agent(request)
+    agent = _agent()
     try:
         return await agent.arun(body)
     except TurnLimitReached as e:
@@ -65,7 +64,7 @@ async def post_agent(body: AgentRequest, request: Request):
     responses={404: {"description": "Unknown conversation"}, **_UNAVAILABLE},
 )
 def get_history(conversation_id: ConversationId, request: Request):
-    history = _agent(request).history(conversation_id)
+    history = _agent().history(conversation_id)
     if history is None:
         raise HTTPException(status_code=404, detail="Unknown conversation")
     return history
