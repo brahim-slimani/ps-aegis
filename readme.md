@@ -24,7 +24,7 @@ pip install -r requirements.txt
 
 
 python -m app.ingestion.ingest --recreate     # phase 1: embeds data/docs into Qdrant (local mode)
-uvicorn app.api.main:app --port 8000          # phases 2, 3: mock backend + 4, 5: /ask and /agent
+uvicorn app.main:app --port 8000          # phases 2, 3: reterival & mock backend + 4, 5: /ask and /agent
 python -m app.agent.chat --trace --role admin --user-id 6    # or talk to the agent in the terminal
 ```
 
@@ -71,7 +71,7 @@ Omit `conversation_id` on the first request to start a new conversation; the res
 |---|---|
 | 1 Ingestion & embeddings | `app/ingestion/{chunker,embedder,vector_store,ingest}.py` |
 | 2 Hybrid retrieval + `/ask` | `app/retrieval/{bm25,hybrid,reranker,factory}.py`, `app/rag.py`, `app/api/main.py` |
-| 3 Mock backend | `app/backend/{db,seed,service,schemas,main}.py` |
+| 3 Mock backend | `app/backend_mock/{db,seed,service,schemas,main}.py` |
 | 4 LangGraph | `app/agent/{state,graph,routing,planning,tools,render,deps}.py`, `app/agent/nodes/{planner,router,executor,responder}.py` |
 | 5 `/agent`, memory, guardrails | `app/api/agent.py`, `app/agent/{runner,schemas,memory,guardrails,factory,chat}.py`, `app/agent/nodes/{guard,confirm}.py` |
 
